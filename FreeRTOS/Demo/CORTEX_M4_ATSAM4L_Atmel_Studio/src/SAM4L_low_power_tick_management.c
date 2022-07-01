@@ -118,10 +118,6 @@ void AST_ALARM_Handler(void)
 	/* The CPU woke because of a tick. */
 	ulTickFlag = pdTRUE;
 
-	/* If this is the first tick since exiting tickless mode then the AST needs
-	to be reconfigured to generate interrupts at the defined tick frequency. */
-	ast_write_alarm0_value( AST, ulAlarmValueForOneTick );
-
 	/* Ensure the interrupt is clear before exiting. */
 	ast_clear_interrupt_flag( AST, AST_INTERRUPT_ALARM );
 }
@@ -176,6 +172,9 @@ struct ast_config ast_conf;
 
 	/* See the comments where xMaximumPossibleSuppressedTicks is declared. */
 	xMaximumPossibleSuppressedTicks = ULONG_MAX / ulAlarmValueForOneTick;
+	
+	/* Be sure the compensation factor for stopping the timer is reasonable. */
+	configASSERT( ulStoppedTimerCompensation < ulAlarmValueForOneTick );
 }
 /*-----------------------------------------------------------*/
 
@@ -213,7 +212,7 @@ asynchronous timer (AST), as the tick is generated from the low power AST and
 not the SysTick as would normally be the case on a Cortex-M. */
 void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
 {
-uint32_t ulAlarmValue, ulCompleteTickPeriods, ulInterruptStatus;
+uint32_t ulCounterValue, ulAlarmValue, ulCompleteTickPeriods, ulInterruptStatus;
 eSleepModeStatus eSleepAction;
 TickType_t xModifiableIdleTime;
 enum sleepmgr_mode xSleepMode;
@@ -229,12 +228,6 @@ enum sleepmgr_mode xSleepMode;
 	/* Calculate the reload value required to wait xExpectedIdleTime tick
 	periods. */
 	ulAlarmValue = ulAlarmValueForOneTick * xExpectedIdleTime;
-	if( ulAlarmValue > ulStoppedTimerCompensation )
-	{
-		/* Compensate for the fact that the AST is going to be stopped
-		momentarily. */
-		ulAlarmValue -= ulStoppedTimerCompensation;
-	}
 
 	/* Stop the AST momentarily.  The time the AST is stopped for is accounted
 	for as best it can be, but using the tickless mode will inevitably result in
@@ -266,10 +259,20 @@ enum sleepmgr_mode xSleepMode;
 	}
 	else
 	{
-		/* Adjust the alarm value to take into account that the current time
-		slice is already partially complete. */
-		ulAlarmValue -= ast_read_counter_value( AST );
+		/* Advance the alarm value to the end of the expected idle time.
+		The current counter value already reflects the partial time slice
+		underway. */
 		ast_write_alarm0_value( AST, ulAlarmValue );
+		
+		/* Compensate for the fact that the AST is stopped now and will be
+		stopped again momentarily.  The new counter value calculated here is
+		sure to be less than the alarm value because xExpectedIdleTime is at
+		least 2, thus the alarm value is at least one full tick duration
+		ahead of the current counter value.  The compensation value is
+		always less than one full tick duration. */
+		ulCounterValue = ast_read_counter_value( AST ) + ulStoppedTimerCompensation;
+		ast_write_counter_value( AST, ulCounterValue );
+		configASSERT( ulCounterValue < ulAlarmValue );
 
 		/* Restart the AST. */
 		prvEnableAST();
@@ -296,7 +299,7 @@ enum sleepmgr_mode xSleepMode;
 		/* Allow the application to define some post sleep processing. */
 		configPOST_SLEEP_PROCESSING( xModifiableIdleTime );
 
-		/* Stop AST.  Again, the time the SysTick is stopped for is	accounted
+		/* Stop AST.  Again, the time the SysTick is stopped for is accounted
 		for as best it can be, but using the tickless mode will	inevitably
 		result in some tiny drift of the time maintained by the	kernel with
 		respect to calendar time. */
@@ -308,16 +311,9 @@ enum sleepmgr_mode xSleepMode;
 
 		if( ulTickFlag != pdFALSE )
 		{
-			/* The tick interrupt has already executed, although because this
-			function is called with the scheduler suspended the actual tick
-			processing will not occur until after this function has exited.
-			Reset the alarm value with whatever remains of this tick period. */
-			ulAlarmValue = ulAlarmValueForOneTick - ast_read_counter_value( AST );
-			ast_write_alarm0_value( AST, ulAlarmValue );
-
 			/* The tick interrupt handler will already have pended the tick
 			processing in the kernel.  As the pending tick will be processed as
-			soon as this function exits, the tick value	maintained by the tick
+			soon as this function exits, the tick value maintained by the tick
 			is stepped forward by one less than the	time spent sleeping.  The
 			actual stepping of the tick appears later in this function. */
 			ulCompleteTickPeriods = xExpectedIdleTime - 1UL;
@@ -327,24 +323,19 @@ enum sleepmgr_mode xSleepMode;
 			/* Something other than the tick interrupt ended the sleep.  How
 			many complete tick periods passed while the processor was
 			sleeping? */
-			ulCompleteTickPeriods = ast_read_counter_value( AST ) / ulAlarmValueForOneTick;
+			ulCounterValue = ast_read_counter_value( AST );
+			ulCompleteTickPeriods = ulCounterValue / ulAlarmValueForOneTick;
 
-			/* The alarm value is set to whatever fraction of a single tick
-			period remains. */
-			ulAlarmValue = ast_read_counter_value( AST ) - ( ulCompleteTickPeriods * ulAlarmValueForOneTick );
-			if( ulAlarmValue == 0 )
-			{
-				/* There is no fraction remaining. */
-				ulAlarmValue = ulAlarmValueForOneTick;
-				ulCompleteTickPeriods++;
-			}
-			ast_write_counter_value( AST, 0 );
-			ast_write_alarm0_value( AST, ulAlarmValue );
+			/* The counter value is set to whatever fraction of the current
+			time slice has already elapsed. */
+			ulCounterValue -= ( ulCompleteTickPeriods * ulAlarmValueForOneTick );
+			ast_write_counter_value( AST, ulCounterValue );
 		}
 
-		/* Restart the AST so it runs up to the alarm value.  The alarm value
-		will get set to the value required to generate exactly one tick period
-		the next time the AST interrupt executes. */
+		/* Restore the alarm value for a standard tick duration. */
+		ast_write_alarm0_value( AST, ulAlarmValueForOneTick );
+
+		/* Restart the AST. */
 		prvEnableAST();
 
 		/* Wind the tick forward by the number of tick periods that the CPU
@@ -353,6 +344,4 @@ enum sleepmgr_mode xSleepMode;
 	}
 }
 
-
 #endif /* configCREATE_LOW_POWER_DEMO == 1 */
-
