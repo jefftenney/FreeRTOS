@@ -189,7 +189,7 @@ static void prvDisableAST( void )
 	{
 		/* Nothing to do here, just waiting. */
 	}
-	if( ast_read_counter_value( AST ) == ast_read_alarm0_value( AST ) )
+	if( AST->AST_CV == AST->AST_AR0 )
 	{
 		ast_write_counter_value( AST, 0 );
 	}
