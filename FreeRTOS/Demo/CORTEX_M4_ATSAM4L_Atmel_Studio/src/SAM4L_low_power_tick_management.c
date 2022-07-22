@@ -20,7 +20,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * https://www.FreeRTOS.org
- * https://aws.amazon.com/freertos
+ * https://github.com/FreeRTOS
  *
  */
 
@@ -189,8 +189,12 @@ static void prvDisableAST( void )
 	{
 		/* Nothing to do here, just waiting. */
 	}
+    
 	if( AST->AST_CV == AST->AST_AR0 )
 	{
+		/* The counter reached the alarm value but the AST has not yet reset the
+		counter back to zero.  Since the AST is now disabled, the reset will not
+		occur automatically.  Reset the counter manually. */
 		ast_write_counter_value( AST, 0 );
 	}
 }
@@ -303,7 +307,7 @@ enum sleepmgr_mode xSleepMode;
 		/* Allow the application to define some post sleep processing. */
 		configPOST_SLEEP_PROCESSING( xModifiableIdleTime );
 
-		/* Stop AST.  Again, the time the SysTick is stopped for is accounted
+		/* Stop AST.  Again, the time the AST is stopped for is accounted
 		for as best it can be, but using the tickless mode will	inevitably
 		result in some tiny drift of the time maintained by the	kernel with
 		respect to calendar time. */
@@ -317,7 +321,7 @@ enum sleepmgr_mode xSleepMode;
 		{
 			/* The tick interrupt handler will already have pended the tick
 			processing in the kernel.  As the pending tick will be processed as
-			soon as this function exits, the tick value maintained by the tick
+			soon as this function exits, the tick value maintained by the kernel
 			is stepped forward by one less than the	time spent sleeping.  The
 			actual stepping of the tick appears later in this function. */
 			ulCompleteTickPeriods = xExpectedIdleTime - 1UL;
